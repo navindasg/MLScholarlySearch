@@ -26,10 +26,16 @@ Currently I have not set up a UI for this project so you will need to set up a p
 ### Steps for Environment Setup
 - Create a .venv running python 3.13.1
 - Transfer files all files in this repository into the .venv
-- Activate the .venv
-  - Mac: in the terminal run:
+- Activate the .venv:
+#### Mac: in the terminal run:
 ```console
 cd .venv
 source bin/activate
 ```
-  - Windows: navigate to .venv/bin/Activate.ps1 and run it.
+#### Windows: navigate to .venv/bin/Activate.ps1 and run it.
+
+## Requirements
+In order to install the python requirements go into terminal and run:
+```console
+pip install requirements.txt
+```
