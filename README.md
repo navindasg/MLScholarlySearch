@@ -35,7 +35,7 @@ source bin/activate
 #### Windows: navigate to .venv/bin/Activate.ps1 and run it.
 
 ## Requirements
-In order to install the python -r requirements go into terminal and run:
+In order to install the python requirements go into terminal and run:
 ```console
-pip install requirements.txt
+pip install -r requirements.txt
 ```
