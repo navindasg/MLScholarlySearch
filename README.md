@@ -39,3 +39,9 @@ In order to install the python requirements go into terminal and run:
 ```console
 pip install -r requirements.txt
 ```
+
+## Running the Code
+- Place all of the scholarly articles in the folder PDFinput
+- Run pdf_parser.py
+- Run embeddings.py
+- Run local_rag.py
