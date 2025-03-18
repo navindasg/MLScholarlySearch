@@ -4,10 +4,10 @@
 For this project I am using all local models. For embedding I am using Nomic-Text-Embed, for Vision I am using llava:13b, and for the LLM I am using gemma3:17b (highest ranking open source model across berkely LLM rankings as of 3/18/25) or phi4.
 
 ### Space requirements:
-Nomic :                   ~300 MB
-llava :                   ~8 GB
-gemma3:17b :              ~18 GB
-phi4 (optional) :         ~10 GB
+* Nomic :                   ~300 MB
+* llava :                   ~8 GB
+* gemma3:17b :              ~18 GB
+* phi4 (optional) :         ~10 GB
 
 ### Specs:
 Running using: Apple Silicon M3 Max / 32 GB RAM.
