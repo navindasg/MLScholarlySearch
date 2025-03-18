@@ -1,12 +1,13 @@
 # Steps to Run
 
 ## Ollama
-For this project I am using all local models. For embedding I am using Nomic-Text-Embed, for Vision I am using llava:13b, and for the LLM I am using deepseek-r1:32b.
+For this project I am using all local models. For embedding I am using Nomic-Text-Embed, for Vision I am using llava:13b, and for the LLM I am using gemma3:17b (highest ranking open source model across berkely LLM rankings as of 3/18/25) or phi4.
 
 ### Space requirements:
-Nomic:         ~300 MB
-llava:         ~8 GB
-deepseek:      ~20 GB
+Nomic :                   ~300 MB
+llava :                   ~8 GB
+gemma3:17b :              ~18 GB
+phi4 (optional) :         ~10 GB
 
 ### Specs:
 Running using: Apple Silicon M3 Max / 32 GB RAM.
@@ -17,8 +18,12 @@ Reccomended: 16 Core Processer / 64 GB RAM.
 - Go to terminal and run:
 ```console
 ollama pull nomic-embed-text
-ollama run llava:13b
-ollama run deepseek-r1:32b
+ollama pull llava:13b
+ollama pull gemma3:27b
+```
+***Optional***
+```console
+ollama pull phi4
 ```
  
 ## Python Environment
