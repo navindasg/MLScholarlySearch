@@ -50,3 +50,6 @@ pip install -r requirements.txt
 - Run pdf_parser.py
 - Run embeddings.py
 - Run local_rag.py
+
+## Time
+Currently the code takes a while do run especially on newer PDFs with a large ammount of high quality images. The LLM also takes a while given the large token input ~500 per related paper. I plan to add parallel processing to speed things up (This will be done for both apple silicon chips and NVIDIA GPUs in PCs using windows or linux).
