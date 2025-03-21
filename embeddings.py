@@ -1,8 +1,9 @@
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import DirectoryLoader
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
 import os
+import glob
 
 def process_documents():
     """
@@ -43,6 +44,39 @@ def process_documents():
     print(f"Vector store created and persisted at {persist_directory}")
     print(f"Total vectors: {vectorstore._collection.count()}")
     return vectorstore
+
+def create_embeddings_from_directory(input_dir: str = "./parser_output",
+                                   vector_db_dir: str = "./vector_db",
+                                   file_pattern: str = "*.txt") -> None:
+    """Create embeddings from all text files in a directory."""
+    
+    # Initialize embeddings model
+    embeddings = OllamaEmbeddings(model="nomic-embed-text")
+    
+    # Load all text files from the directory
+    loader = DirectoryLoader(
+        input_dir,
+        glob=file_pattern,
+        loader_cls=TextLoader,
+        loader_kwargs={'autodetect_encoding': True}
+    )
+    
+    documents = loader.load()
+    print(f"\nLoaded {len(documents)} documents")
+    
+    # Create and persist the vector store
+    vectorstore = Chroma.from_documents(
+        documents=documents,
+        embedding=embeddings,
+        persist_directory=vector_db_dir
+    )
+    
+    # Persist the vector store
+    vectorstore.persist()
+    print(f"Created and persisted embeddings in {vector_db_dir}")
+    
+    # Return the number of vectors created
+    return len(documents)
 
 if __name__ == "__main__":
     process_documents()
