@@ -1,218 +1,280 @@
-from langchain.retrievers import MultiQueryRetriever
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_chroma import Chroma
 from langchain.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
 from langchain.schema.runnable import RunnablePassthrough
-from langchain.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Union, Any
-import time
+from typing import List, Dict, Optional
 import json
 import os
-import re
+from table_handler import TableHandler
 
-class ThermodynamicProperty(BaseModel):
-    molecule_name: str = Field(description="The name of the molecule or compound")
-    melting_point: Optional[str] = Field(None, description="Melting point (Tm) of the molecule, including value and unit")
-    crystallization_temperature: Optional[str] = Field(None, description="Crystallization temperature of the molecule, including value and unit")
-    crystallization_driving_force: Optional[str] = Field(None, description="Crystallization driving force (ΔGc) of the molecule, including value and unit")
-    source_context: str = Field(description="The relevant portion of text from which this information was extracted")
-
-class ThermodynamicResults(BaseModel):
-    properties: List[ThermodynamicProperty] = Field(description="List of thermodynamic properties extracted from the document")
-
-def setup_model():
-    llm = ChatOllama(
-        model="deepseek-r1:32b", 
+def setup_model(model_name: str = "gemma3:27b") -> ChatOllama:
+    """Setup the LLM model with specific parameters."""
+    return ChatOllama(
+        model=model_name,
         temperature=0.1,
-        top_p=0.95,
-        repeat_penalty=1.15,
-        max_tokens=1024,
-        keep_alive="3h"
+        format="json",
+        system="""You are a scientific assistant specialized in extracting thermodynamic properties from materials science texts.
+        Your task is to output valid JSON containing thermodynamic properties for ALL molecules mentioned in the text.
+        You MUST NOT include any text before or after the JSON.
+        For each molecule found, extract:
+        - melting_point (in °C or K)
+        - crystallization_temperature (in °C or K)
+        - crystallization_driving_force (in kJ/mol)
+        If a property is not found for a molecule, use null for that value.
+        Return an array of objects, where each object represents one molecule and its properties."""
     )
-    return llm
 
-examples = [
-    {
-        "input": "Text discusses poly(ethylene glycol) (PEG) with a melting point of 65°C and shows crystallization at 40°C under a driving force (ΔGc) of -3.2 kJ/mol.",
-        "output": """
-{
-  "properties": [
-    {
-      "molecule_name": "poly(ethylene glycol) (PEG)",
-      "melting_point": "65°C",
-      "crystallization_temperature": "40°C",
-      "crystallization_driving_force": "-3.2 kJ/mol",
-      "source_context": "Text discusses poly(ethylene glycol) (PEG) with a melting point of 65°C and shows crystallization at 40°C under a driving force (ΔGc) of -3.2 kJ/mol."
-    }
-  ]
-}"""
-    },
-    {
-        "input": "Polylactic acid (PLA) was studied extensively. Results indicated a Tm of 175°C. The crystallization occurred at 105°C with a thermodynamic driving force ΔGc of approximately -5.8 kJ/mol.",
-        "output": """
-{
-  "properties": [
-    {
-      "molecule_name": "Polylactic acid (PLA)",
-      "melting_point": "175°C",
-      "crystallization_temperature": "105°C",
-      "crystallization_driving_force": "-5.8 kJ/mol",
-      "source_context": "Polylactic acid (PLA) was studied extensively. Results indicated a Tm of 175°C. The crystallization occurred at 105°C with a thermodynamic driving force ΔGc of approximately -5.8 kJ/mol."
-    }
-  ]
-}"""
-    }
-]
+def setup_embeddings() -> OllamaEmbeddings:
+    """Setup the embeddings model."""
+    return OllamaEmbeddings(model="nomic-embed-text")
 
-def main():
-    embeddings = OllamaEmbeddings(
-        model="nomic-embed-text"
-    )
-    db = Chroma(
+def setup_vector_store(embeddings: OllamaEmbeddings) -> Chroma:
+    """Setup the vector store."""
+    return Chroma(
         persist_directory="./vector_db",
         embedding_function=embeddings
     )
-    retriever = db.as_retriever(
+
+def setup_retriever(vector_store: Chroma) -> Chroma:
+    """Setup the retriever with basic similarity search."""
+    return vector_store.as_retriever(
         search_type="similarity",
-        search_kwargs={"k": 5}
+        search_kwargs={
+            "k": 5  # Retrieve more documents
+        }
     )
-    llm = setup_model()
+
+# Example few-shot prompts
+examples = [
+    {
+        "input": "What are the thermodynamic properties of polyethylene and polypropylene?",
+        "output": """[
+            {
+                "molecule": "polyethylene",
+                "melting_point": "130°C",
+                "crystallization_temperature": "110°C",
+                "crystallization_driving_force": "-2.0 kJ/mol"
+            },
+            {
+                "molecule": "polypropylene",
+                "melting_point": "165°C",
+                "crystallization_temperature": "100°C",
+                "crystallization_driving_force": "-2.5 kJ/mol"
+            }
+        ]"""
+    },
+    {
+        "input": "Find all materials and their crystallization properties.",
+        "output": """[
+            {
+                "molecule": "polyethylene",
+                "melting_point": null,
+                "crystallization_temperature": "110°C",
+                "crystallization_driving_force": "-2.0 kJ/mol"
+            },
+            {
+                "molecule": "polypropylene",
+                "melting_point": null,
+                "crystallization_temperature": "100°C",
+                "crystallization_driving_force": "-2.5 kJ/mol"
+            }
+        ]"""
+    }
+]
+
+def create_prompt() -> ChatPromptTemplate:
+    """Create the prompt template with few-shot examples."""
+    # Create the few-shot prompt template
     few_shot_prompt = FewShotChatMessagePromptTemplate(
         example_prompt=ChatPromptTemplate.from_messages([
             ("human", "{input}"),
             ("ai", "{output}"),
         ]),
-        examples=examples,
+        examples=[
+            {
+                "input": "What are the thermodynamic properties of polyethylene and polypropylene?",
+                "output": """[
+                    {
+                        "molecule": "polyethylene",
+                        "melting_point": "130°C",
+                        "crystallization_temperature": "110°C",
+                        "crystallization_driving_force": "-2.0 kJ/mol"
+                    },
+                    {
+                        "molecule": "polypropylene",
+                        "melting_point": "165°C",
+                        "crystallization_temperature": "100°C",
+                        "crystallization_driving_force": "-2.5 kJ/mol"
+                    }
+                ]"""
+            },
+            {
+                "input": "Find all materials and their crystallization properties.",
+                "output": """[
+                    {
+                        "molecule": "polyethylene",
+                        "melting_point": null,
+                        "crystallization_temperature": "110°C",
+                        "crystallization_driving_force": "-2.0 kJ/mol"
+                    },
+                    {
+                        "molecule": "polypropylene",
+                        "melting_point": null,
+                        "crystallization_temperature": "100°C",
+                        "crystallization_driving_force": "-2.5 kJ/mol"
+                    }
+                ]"""
+            }
+        ],
     )
-    template = """You are a specialized research assistant tasked with extracting specific thermodynamic properties from scientific texts. 
+
+    # Create the main prompt template
+    template = """You are a scientific assistant specialized in extracting thermodynamic properties from materials science texts.
+    Your task is to output valid JSON containing thermodynamic properties for ALL molecules mentioned in the text.
     
-    Identify any information about:
-    1. Melting point (Tm)
-    2. Crystallization temperature
-    3. Crystallization driving force (ΔGc)
+    For each molecule found, extract these specific properties:
+    - melting_point: Look for values with units °C or K
+    - crystallization_temperature: Look for values with units °C or K
+    - crystallization_driving_force: Look for values with units kJ/mol
     
-    For each property found, list the associated molecule or compound name. Only extract information that's explicitly mentioned in the text.
-    
-    IMPORTANT: Always include the units for temperature and driving force values. Pay special attention to whether temperatures are reported in Celsius (°C) or Kelvin (K). Always capture the units as they appear in the text.
-    
-    Here's the text to analyze:
-    
+    If a property is not found for a molecule, use null for that value.
+    Return an array of objects, where each object represents one molecule and its properties.
+    Always include the units in the values.
+
+    Context:
     {context}
-    
-    Extract all thermodynamic properties mentioned above with their associated molecules. Format your response as a JSON object following this structure:
-    
-    ```json
-    {{
-      "properties": [
-        {{
-          "molecule_name": "name of molecule or compound",
-          "melting_point": "value with unit (e.g., 350K or 65°C)",
-          "crystallization_temperature": "value with unit (e.g., 300K or 40°C)",
-          "crystallization_driving_force": "value with unit (e.g., -3.2 kJ/mol)",
-          "source_context": "relevant portion of text from which this information was extracted"
-        }},
-        // Additional molecules as needed
-      ]
-    }}
-    ```
-    
-    If no properties are found, return an empty properties list. Only include fields for which values are explicitly provided in the text. Do not hallucinate or infer values not explicitly stated.
-    """
-    
+
+    Question: {question}
+
+    Answer:"""
+
+    # Combine the templates
     prompt = ChatPromptTemplate.from_messages([
         ("system", template),
         few_shot_prompt,
-        ("human", "{context}")
+        ("human", "{question}")
     ])
-    chain = (
-        {"context": retriever}
-        | prompt
-        | llm
-    )
-    parser = PydanticOutputParser(pydantic_object=ThermodynamicResults)
-    def standardize_temperature(temp_str):
-        if not temp_str:
-            return temp_str
-        if '°C' in temp_str or 'C' in temp_str:
-            return temp_str
-        kelvin_pattern = r'(\d+\.?\d*)\s*(?:K|Kelvin)'
-        match = re.search(kelvin_pattern, temp_str)
-        
-        if match:
-            kelvin_value = float(match.group(1))
-            celsius_value = round(kelvin_value - 273.15, 2)
-            temp_celsius = f"{celsius_value}°C (converted from {kelvin_value}K)"
-            return temp_celsius
-        
-        return temp_str
-    def process_results(results):
-        try:
-            start_idx = results.find('{')
-            end_idx = results.rfind('}') + 1
-            if start_idx != -1 and end_idx != -1:
-                json_str = results[start_idx:end_idx]
-                parsed_result = parser.parse(json_str)
-                for prop in parsed_result.properties:
-                    prop.melting_point = standardize_temperature(prop.melting_point)
-                    prop.crystallization_temperature = standardize_temperature(prop.crystallization_temperature)
-                
-                return parsed_result
-            else:
-                return parser.parse('{"properties": []}')
-        except Exception as e:
-            print(f"Error parsing results: {e}")
-            return ThermodynamicResults(properties=[])
 
-    def search_thermodynamic_properties(query="thermodynamic properties melting point crystallization"):
-        print(f"Searching for: {query}")
-        print("Retrieving relevant documents...")
-        
-        start_time = time.time()
+    return prompt
+
+def query_documents(query: str, k: int = 5) -> str:
+    """Query the documents and return a response."""
+    try:
+        # Get relevant documents
         docs = retriever.invoke(query)
+        
+        # Get relevant tables
+        tables = table_handler.list_tables()
+        relevant_tables = []
+        for table in tables:
+            if any(term in table.lower() for term in ['temperature', 'melting', 'crystallization', 'force']):
+                table_data = table_handler.query_table(table)
+                if not table_data.empty:
+                    relevant_tables.append(f"Table {table}:\n{table_data.to_string()}\n")
+        
+        # Get relevant image descriptions
+        image_tables = [t for t in tables if t.startswith('image_')]
+        relevant_images = []
+        for img_table in image_tables:
+            img_data = table_handler.query_table(img_table)
+            if not img_data.empty and any(term in img_data['description'].iloc[0].lower() 
+                                        for term in ['temperature', 'melting', 'crystallization', 'force', 'graph', 'plot']):
+                relevant_images.append(f"Image {img_table}:\n{img_data['description'].iloc[0]}\n")
+        
+        # Create context from documents
         context = "\n\n".join([doc.page_content for doc in docs])
-        raw_results = llm.invoke(prompt.format(context=context))
-        end_time = time.time()
-        print(f"Search completed in {end_time - start_time:.2f} seconds")
-        results = process_results(raw_results.content)
-        with open("thermodynamic_properties.json", "w") as f:
-            json_content = json.dumps(results.model_dump(), indent=2)
-            f.write(json_content)
-        print(f"Found {len(results.properties)} molecules with thermodynamic properties")
-        print("Results saved to thermodynamic_properties.json")     
-        return results
+        
+        # Add relevant tables and images to context
+        if relevant_tables:
+            context += "\n\nRelevant Tables:\n" + "\n".join(relevant_tables)
+        if relevant_images:
+            context += "\n\nRelevant Images:\n" + "\n".join(relevant_images)
+        
+        # Create prompt with context
+        prompt = f"""Based on the following context, extract thermodynamic properties in JSON format. 
+        Focus on finding:
+        1. Melting points
+        2. Crystallization temperatures
+        3. Crystallization driving forces
+        
+        Context:
+        {context}
+        
+        Respond with a JSON object containing arrays of objects with these properties:
+        {{
+            "melting_points": [
+                {{
+                    "material": "name of material",
+                    "value": "temperature value",
+                    "unit": "°C or K"
+                }}
+            ],
+            "crystallization_temperatures": [
+                {{
+                    "material": "name of material",
+                    "value": "temperature value",
+                    "unit": "°C or K"
+                }}
+            ],
+            "crystallization_driving_forces": [
+                {{
+                    "material": "name of material",
+                    "value": "force value",
+                    "unit": "kJ/mol"
+                }}
+            ]
+        }}
+        
+        If no properties are found, return an empty array for that category.
+        """
+        
+        # Get response from model
+        response = model.invoke(prompt)
+        
+        # Extract content from AIMessage
+        if hasattr(response, 'content'):
+            response_text = response.content
+        else:
+            response_text = str(response)
+        
+        # Ensure response is valid JSON
+        try:
+            json_response = json.loads(response_text)
+            return json.dumps(json_response, indent=2)
+        except json.JSONDecodeError:
+            return json.dumps({
+                "melting_points": [],
+                "crystallization_temperatures": [],
+                "crystallization_driving_forces": []
+            }, indent=2)
+            
+    except Exception as e:
+        print(f"Error in query_documents: {e}")
+        return json.dumps({
+            "error": str(e),
+            "melting_points": [],
+            "crystallization_temperatures": [],
+            "crystallization_driving_forces": []
+        }, indent=2)
 
-    search_terms = [
-        "melting point Tm polymer crystallization",
-        "crystallization temperature polymer thermodynamics",
-        "crystallization driving force ΔGc polymer",
-        "thermodynamic properties crystallization Tm ΔGc"
-    ]
+def main():
+    """Main function to test the RAG system."""
+    # Initialize components
+    embeddings = setup_embeddings()
+    vector_store = setup_vector_store(embeddings)
+    global retriever, model, table_handler
+    retriever = setup_retriever(vector_store)
+    model = setup_model()
+    table_handler = TableHandler()
     
-    all_results = ThermodynamicResults(properties=[])
-    
-    for term in search_terms:
-        results = search_thermodynamic_properties(term)
-        existing_molecules = {prop.molecule_name for prop in all_results.properties}
-        for prop in results.properties:
-            if prop.molecule_name not in existing_molecules:
-                all_results.properties.append(prop)
-                existing_molecules.add(prop.molecule_name)
-    
-    with open("all_thermodynamic_properties.json", "w") as f:
-        json_content = json.dumps(all_results.model_dump(), indent=2)
-        f.write(json_content)
-    
-    print(f"Total unique molecules found: {len(all_results.properties)}")
-    print("All results saved to all_thermodynamic_properties.json")
-    for i, prop in enumerate(all_results.properties):
-        print(f"\nMolecule {i+1}: {prop.molecule_name}")
-        if prop.melting_point:
-            print(f"  Melting Point (Tm): {prop.melting_point}")
-        if prop.crystallization_temperature:
-            print(f"  Crystallization Temperature: {prop.crystallization_temperature}")
-        if prop.crystallization_driving_force:
-            print(f"  Crystallization Driving Force (ΔGc): {prop.crystallization_driving_force}")
+    try:
+        # Example usage
+        question = "Find all molecules and their thermodynamic properties (melting point, crystallization temperature, and crystallization driving force)."
+        answer = query_documents(question)
+        print("\nFinal Answer:", answer)
+    finally:
+        # Clean up resources
+        table_handler.close()
 
 if __name__ == "__main__":
     main()
