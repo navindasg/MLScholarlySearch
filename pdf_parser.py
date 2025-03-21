@@ -1,6 +1,5 @@
 import os
 import fitz
-import camelot
 from PIL import Image
 import io
 import numpy as np
@@ -9,8 +8,12 @@ import statistics
 import json
 import shutil
 import csv
+import pdfplumber
+import pandas as pd
+from typing import List, Dict, Optional
+from table_handler import TableHandler
 
-def extract_pdf_data(pdf_path='./PDFinput/Efficient-perovskite-light-emitting-diodes-featuring-nanometre-sized-crystallites.pdf', 
+def extract_pdf_data(pdf_path, 
                      output_file=None, 
                      output_images_folder='./parser_output/extracted_images', 
                      output_tables_folder='./parser_output/extracted_tables',
@@ -46,7 +49,6 @@ def extract_pdf_data(pdf_path='./PDFinput/Efficient-perovskite-light-emitting-di
             txt_file.write(f"NEW EXTRACTION: {os.path.basename(pdf_path)}\n")
             txt_file.write("="*50 + "\n\n")
         
-        txt_file.write("=== PDF TEXT CONTENT ===\n\n")
         txt_file.write("=== PDF TEXT CONTENT ===\n\n")
         for page_num in range(len(doc)):
             page = doc[page_num]
@@ -123,19 +125,21 @@ def extract_pdf_data(pdf_path='./PDFinput/Efficient-perovskite-light-emitting-di
             image_counter += 1
     print("Image extraction complete. Saved in folder", output_images_folder)
     
-    # Table Extraction
+    # Table Extraction using pdfplumber
     extracted_tables = []
     try:
-        tables = camelot.read_pdf(pdf_path, pages='all')
-        if tables:
-            for i, table in enumerate(tables):
-                table_csv_path = os.path.join(output_tables_folder, f"table_{i + 1}.csv")
-                table.to_csv(table_csv_path)
-                extracted_tables.append(table_csv_path)
-                print(f"Extracted table saved as {table_csv_path}")
-            print("Table extraction complete. Saved in folder", output_tables_folder)
-        else:
-            print("No tables found in the PDF.")
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_num, page in enumerate(pdf.pages, 1):
+                tables = page.extract_tables()
+                if tables:
+                    for table_num, table in enumerate(tables, 1):
+                        # Convert table to DataFrame
+                        df = pd.DataFrame(table[1:], columns=table[0])
+                        table_csv_path = os.path.join(output_tables_folder, f"table_{page_num}_{table_num}.csv")
+                        df.to_csv(table_csv_path, index=False)
+                        extracted_tables.append(table_csv_path)
+                        print(f"Extracted table saved as {table_csv_path}")
+        print("Table extraction complete. Saved in folder", output_tables_folder)
     except Exception as e:
         print("Error extracting tables:", e)
     
@@ -173,6 +177,7 @@ def extract_pdf_data(pdf_path='./PDFinput/Efficient-perovskite-light-emitting-di
         else:
             txt_file.write("No images processed or no descriptions generated.\n\n")
     
+    # Cleanup temporary files
     for image_path in extracted_image_paths:
         try:
             os.remove(image_path)
@@ -207,5 +212,159 @@ def extract_pdf_data(pdf_path='./PDFinput/Efficient-perovskite-light-emitting-di
     
     print(f"All data has been consolidated into {output_file}")
 
-if __name__ == '__main__':
-    extract_pdf_data()
+def process_all_pdfs(input_folder='./PDFinput'):
+    for filename in os.listdir(input_folder):
+        if filename.lower().endswith('.pdf'):
+            pdf_path = os.path.join(input_folder, filename)
+            print(f"Processing {pdf_path}...")
+            extract_pdf_data(pdf_path=pdf_path)
+
+class PDFParser:
+    def __init__(self, output_dir: str = "parser_output"):
+        """Initialize the PDF parser."""
+        self.output_dir = output_dir
+        self.table_handler = TableHandler()
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        self.images_dir = os.path.join(output_dir, "extracted_images")
+        if not os.path.exists(self.images_dir):
+            os.makedirs(self.images_dir)
+
+    def extract_tables(self, pdf_path: str) -> List[Dict]:
+        """Extract tables from PDF and identify thermodynamic properties."""
+        tables = []
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for page_num, page in enumerate(pdf.pages, 1):
+                    page_tables = page.extract_tables()
+                    if page_tables:
+                        for table_num, table in enumerate(page_tables, 1):
+                            df = pd.DataFrame(table[1:], columns=table[0] if table[0] else [f"col_{i}" for i in range(len(table[0]))])
+                            df.columns = [str(col).lower().strip() if col else f"col_{i}" for i, col in enumerate(df.columns)]
+                            thermo_cols = []
+                            for col in df.columns:
+                                if any(term in col for term in ['temperature', 'temp', '°c', 'k', 'kelvin',
+                                                             'melting', 'crystallization', 'force', 'energy']):
+                                    thermo_cols.append(col)
+                            
+                            if thermo_cols:
+                                table_name = f"thermo_table_{page_num}_{table_num}"
+                                self.table_handler.store_table(df, table_name, {
+                                    'source': pdf_path,
+                                    'page': page_num,
+                                    'table_num': table_num,
+                                    'thermo_columns': thermo_cols
+                                })
+                                tables.append({
+                                    'name': table_name,
+                                    'columns': thermo_cols,
+                                    'data': df.to_dict('records')
+                                })
+        except Exception as e:
+            print(f"Error extracting tables: {e}")
+        return tables
+
+    def extract_images(self, pdf_path: str) -> List[str]:
+        """Extract images from PDF and store them."""
+        extracted_images = []
+        try:
+            doc = fitz.open(pdf_path)
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                image_list = page.get_images(full=True)
+                for img in image_list:
+                    xref = img[0]
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    image_filename = f"image_{page_num + 1}_{len(extracted_images) + 1}.{image_ext}"
+                    image_path = os.path.join(self.images_dir, image_filename)
+                    
+                    with open(image_path, "wb") as img_file:
+                        img_file.write(image_bytes)
+                    
+                    extracted_images.append(image_path)
+
+            if extracted_images:
+                from LLAVA_image_description import describe_image
+                descriptions = describe_image(
+                    image_directory=self.images_dir,
+                    output_file=os.path.join(self.output_dir, "image_descriptions.json"),
+                    model_name="llava:13b"
+                )
+                
+                for img_path, desc in descriptions.items():
+                    self.table_handler.store_table(
+                        pd.DataFrame({'description': [desc]}),
+                        f"image_{img_path}",
+                        {'type': 'image_description', 'source': pdf_path}
+                    )
+            
+            return extracted_images
+        except Exception as e:
+            print(f"Error extracting images: {e}")
+            return []
+
+    def process_pdf(self, pdf_path: str) -> str:
+        """Process a PDF file and extract all relevant information."""
+        tables = self.extract_tables(pdf_path)
+        images = self.extract_images(pdf_path)
+        doc = fitz.open(pdf_path)
+        text_content = []
+        for page in doc:
+            text_content.append(page.get_text())
+        doc.close()
+        image_descriptions = {}
+        if images:
+            for img_path in images:
+                img_name = os.path.basename(img_path)
+                desc_df = self.table_handler.query_table(f"image_{img_name}")
+                if not desc_df.empty:
+                    image_descriptions[img_name] = desc_df['description'].iloc[0]
+        
+        output_file = os.path.join(self.output_dir, f"{os.path.splitext(os.path.basename(pdf_path))[0]}.txt")
+        
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write("=== PDF TEXT CONTENT ===\n\n")
+            for i, text in enumerate(text_content, 1):
+                f.write(f"--- Page {i} ---\n")
+                f.write(text)
+                f.write("\n\n")
+            
+            if tables:
+                f.write("\n=== EXTRACTED TABLES ===\n\n")
+                for table in tables:
+                    f.write(f"Table: {table['name']}\n")
+                    f.write("Thermodynamic columns: " + ", ".join(table['columns']) + "\n")
+                    df = pd.DataFrame(table['data'])
+                    f.write(df.to_string())
+                    f.write("\n\n")
+            
+            if image_descriptions:
+                f.write("\n=== EXTRACTED IMAGES AND DESCRIPTIONS ===\n\n")
+                for img_name, description in image_descriptions.items():
+                    f.write(f"Image: {img_name}\n")
+                    f.write(f"Description: {description}\n")
+                    f.write("\n")
+        
+        return output_file
+
+    def close(self):
+        """Close the database connection."""
+        self.table_handler.close()
+
+def main():
+    """Main function to test the PDF parser."""
+    parser = PDFParser()
+    input_dir = "PDFinput"
+    for filename in os.listdir(input_dir):
+        if filename.endswith(".pdf"):
+            pdf_path = os.path.join(input_dir, filename)
+            print(f"Processing {pdf_path}...")
+            output_file = parser.process_pdf(pdf_path)
+            print(f"Output saved to {output_file}")
+    
+    parser.close()
+
+if __name__ == "__main__":
+    main()
